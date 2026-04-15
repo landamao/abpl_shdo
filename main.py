@@ -417,7 +417,7 @@ class shell执行器(Star):
 
         # 特殊命令：中断当前命令 (stop)
         if 用户输入内容 == "stop":
-            self.info(f"[用户 {用户ID}] 请求中断当前命令")
+            logger.info(f"[用户 {用户ID}] 请求中断当前命令")
             会话 = self.会话管理.get(用户ID)
             if not 会话:
                 await self.发送回复文本(event, "ℹ️ 当前没有活动的 shell 会话")
