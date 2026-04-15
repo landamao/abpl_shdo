@@ -1,0 +1,59 @@
+
+{
+  "超时时间": {
+    "description": "命令执行超时时间（秒）",
+    "type": "int",
+    "hint": "单个命令的最大执行时间，超时将自动终止命令。",
+    "default": 120
+  },
+  "记录日志": {
+    "description": "是否记录命令执行日志",
+    "type": "bool",
+    "hint": "开启后将打印详细的info日志，可用于排查问题",
+    "default": false
+  },
+  "工作目录": {
+    "description": "插件的工作目录，绝对路径",
+    "type": "string",
+    "hint": "留空则使用默认值",
+    "default": ""
+  },
+  "危险命令": {
+    "description": "危险命令列表",
+    "type": "list",
+    "hint": "这些命令所有人都不可执行，留空将恢复默认值",
+    "default": [
+      "rm -rf",
+      "mkfs",
+      "dd",
+      "shutdown",
+      "reboot",
+      "poweroff",
+      "halt",
+      "chmod 777",
+      "chmod -R 777",
+      "chown -R",
+      ":(){ :|:& };:",
+      "> /dev/sda",
+      "mkfs.ext4",
+      "dd if=/dev/zero"
+        ]
+  },
+  "最大输出长度": {
+    "description": "单次命令返回的最大字符数（输出部分）",
+    "type": "int",
+    "hint": "超过此长度的输出将被截断，小于20表示不限制",
+    "slider": {
+        "min": 120,
+        "max": 2000,
+        "step": 1
+    },
+    "default": 2000
+  },
+  "授权用户": {
+    "description": "授权用户ID",
+    "type": "list",
+    "hint": "授权用户将拥有所有执行权限",
+    "default": []
+  }
+}
