@@ -1,6 +1,6 @@
 name: shell执行器
 desc:  shell执行器
 help: shell执行器
-version: v2.0.6
+version: v2.1.0
 author: 懒大猫
 repo: https://github.com/landamao/abpl_shdo

@@ -454,6 +454,73 @@ class shell执行器(Star):
         await event.send(event.chain_result([Reply(id=event.message_obj.message_id), Plain(文本)]))
         self.debug("[回复] 消息已发送")
 
+    @filter.command(command_name="ctrl", alias={"sh^", "^sh", "sh+", "+sh", "c"})
+    async def 发送控制键(self, event: AstrMessageEvent):
+        """向当前 shell 会话发送 Ctrl 组合键"""
+        用户ID = event.get_sender_id()
+        self.info(f"[Ctrl] 用户 {用户ID} 请求发送控制键，原始消息: {event.message_str}")
+
+        # 权限检查
+        if 用户ID not in self.授权用户:
+            await self.发送回复文本(event, "❌ 你没有权限")
+            return
+
+        # 解析参数
+        消息文本 = event.message_str.strip()
+        分割 = 消息文本.split(" ", 1)
+        参数 = 分割[1].strip() if len(分割) > 1 else ""
+
+        if not 参数:
+            await self.发送回复文本(event, "请指定要发送的 Ctrl 组合键，例如：/ctrl c  或  /ctrl d")
+            return
+
+        # 提取字母（仅取第一个字符，并转为小写）
+        字母 = 参数[0].lower()
+        if not 字母.isalpha():
+            await self.发送回复文本(event, f"无效的控制键 '{参数[0]}'，请输入单个字母")
+            return
+
+        # 获取用户会话
+        会话 = self.会话管理.get(用户ID)
+        if not 会话 or not 会话.is_alive():
+            # 没有活动会话，创建新会话以便发送控制键（例如 ^D 退出后可能需要新会话）
+            会话 = 交互式Shell会话(self.工作目录, self.超时时间, self.记录日志)
+            self.会话管理[用户ID] = 会话
+            self.info(f"[Ctrl] 用户 {用户ID} 没有活动会话，已创建新会话")
+
+        # 发送控制键
+        try:
+            会话.shell进程.sendcontrol(字母)
+            logger.info(f"[Ctrl] 已向用户 {用户ID} 的会话发送 Ctrl+{字母.upper()}")
+        except Exception as e:
+            await self.发送回复文本(event, f"❌ 发送控制键失败：{e}")
+            return
+
+        # 读取立即返回的输出（可选，让用户知道效果）
+        time.sleep(0.1)  # 短暂等待
+        输出 = ""
+        try:
+            while True:
+                data = 会话.shell进程.read_nonblocking(size=1024, timeout=0.1)
+                if data:
+                    输出 += data
+                else:
+                    break
+        except pexpect.TIMEOUT:
+            pass
+        except pexpect.EOF:
+            self.warning(f"[Ctrl] 用户 {用户ID} 的 shell 进程在发送控制键后 EOF")
+
+        输出 = 会话.过滤ANSI转义(输出).strip()
+        if 输出:
+            if len(输出) > self.最大输出长度:
+                输出 = 输出[:self.最大输出长度] + "\n... (输出过长已截断)"
+            回复文本 = f"⌨️ 已发送 Ctrl+{字母.upper()}\n```\n{输出}\n```"
+        else:
+            回复文本 = f"⌨️ 已发送 Ctrl+{字母.upper()}"
+
+        await self.发送回复文本(event, 回复文本)
+
     def 获取默认值(self, 键, 默认=None) -> Any:
         """获取顶层配置的默认值，不适用于二层"""
         val = self.config.schema[键].get('default', 默认)

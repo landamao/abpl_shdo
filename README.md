@@ -1,14 +1,12 @@
 
-
 <div align="center">
 
 # 🚀 Shell 执行器
-
-[![版本](https://img.shields.io/badge/version-v2.0.0-blue)](#)
+[![版本](https://img.shields.io/badge/version-v2.1.0-blue)](#)
 [![作者](https://img.shields.io/badge/author-懒大猫-orange)](#)
 [![框架平台](https://img.shields.io/badge/框架平台-AstrBot-blue)](#)
 
-> 在聊天中安全、持久化地执行 Shell 命令 —— 像操作本地终端一样自然
+> 支持持久会话，在聊天中安全、持久化地执行 Shell 命令 —— 像操作本地终端一样自然
 
 </div>
 
@@ -29,6 +27,8 @@
 | 📦 **即装即用** | 支持通过 WebUI 链接直接安装，也可手动复制文件安装 |
 | 🧹 **会话重置** | 使用 `/shell reset` 随时重置当前会话 |
 | 📊 **智能输出截断** | 可配置最大输出长度，防止刷屏 |
+| 🛑 **命令中断** | 使用 `/shell stop` 或 `/ctrl c` 中断卡死的命令 |
+| ⌨️ **完整控制键支持** | 通过 `/ctrl` 发送任意 `Ctrl+字母` 组合键 |
 
 ---
 
@@ -37,7 +37,7 @@
 ### 方法一：WebUI 链接安装（推荐，无需重启）
 
 1. 打开 AstrBot WebUI，进入 **插件商店**
-2. 点击 **通过链接安装**
+2. 点击右下角 **+** ，**通过链接安装**
 3. 输入以下安装链接：
    ```
    https://github.com/landamao/abpl_shdo
@@ -51,8 +51,8 @@
    - `_conf_schema.json`
    - `requirements.txt`
    - `metadata.yaml`
-2. 在`AstrBot/data/plugins/`目录下创建文件夹`shell执行器`
-3. 将文件放入`shell执行器`目录下
+2. 在 `AstrBot/data/plugins/` 目录下创建文件夹 `shell执行器`
+3. 将文件放入 `shell执行器` 目录下
 4. **重启 AstrBot** 完成加载
 
 ---
@@ -64,7 +64,7 @@
 | 配置项 | 类型 | 默认值 | 说明 |
 | :--- | :--- | :--- | :--- |
 | 👤 **授权用户** | `list` | `[]` | 允许使用插件的用户ID列表（如 QQ号、平台UID）。**留空则所有人都无法使用** |
-| ⏱️ **超时时间** | `int` | `120` | 单个命令的最大执行时间（秒），超时自动终止 |
+| ⏱️ **超时时间** | `int` | `120` | 单个命令的最大执行时间（秒），超时自动发送 Ctrl+C 中断 |
 | 📝 **记录日志** | `bool` | `false` | 是否打印详细的命令执行日志（用于调试） |
 | 📂 **工作目录** | `string` | `插件目录/工作目录` | 所有命令执行的起始工作目录（绝对路径） |
 | 🚫 **危险命令** | `list` | 见下方 | 禁止执行的命令模式列表（支持部分匹配） |
@@ -83,59 +83,95 @@
 
 ## 🎮 使用方法
 
-### 基本命令
+### 核心命令
 
-| 命令 | 作用 |
-| :--- | :--- |
-| `/shell <命令>` 或 `/sh <命令>` | 执行一条 Shell 命令 |
-| `/shell reset` | 重置当前用户的会话（清空环境、工作目录重置） |
+| 命令 | 作用 | 示例 |
+| :--- | :--- | :--- |
+| `/shell <命令>` 或 `/sh <命令>` | 执行 Shell 命令或响应交互输入 | `/shell ls -la` |
+| `/shell reset` | 重置当前用户的会话（清空环境、工作目录重置） | `/shell reset` |
+| `/shell stop` | 中断当前正在执行的命令（相当于 Ctrl+C） | `/shell stop` |
+| `/ctrl <字母>` | 向当前会话发送 `Ctrl+字母` 组合键 | `/ctrl c` 或 `/ctrl d` |
 
-### 示例
+### 详细使用示例
 
+#### 1️⃣ 基本命令执行
 ```bash
-# 第一次执行
+# 第一次执行，自动创建会话
 /shell pwd
-> 输出：/app/data/plugins/shell执行器/工作目录
+> ✅ 执行完成：
+> /app/data/plugins/shell执行器/工作目录
+> 退出码: 0
 
-# 切换目录
+# 切换目录并查看
 /shell cd /tmp
 /shell pwd
-> 输出：/tmp
+> ✅ 执行完成：
+> /tmp
+```
 
-# 设置环境变量
-/shell export MY_VAR="hello"
-/shell echo $MY_VAR
-> 输出：hello
+#### 2️⃣ 环境变量保持
+```bash
+/shell export MY_NAME="AstrBot"
+/shell echo $MY_NAME
+> ✅ 执行完成：
+> AstrBot
+```
 
-# 交互式命令（自动进入等待模式）
+#### 3️⃣ 交互式命令（自动等待输入）
+```bash
 /shell apt install sl
 > 🔄 需要继续输入：
 > Do you want to continue? [Y/n]
 > 请发送下一步输入
 
-# 继续输入 y
+# 用户发送 y 作为响应
 /shell y
-> ✅ 执行完成：...
+> ✅ 执行完成：
+> ... 安装过程输出 ...
+> 退出码: 0
 ```
 
-### 交互式命令识别
-
-插件会自动检测命令输出中是否包含常见交互提示符，例如：
-- `[y/n]` `(y/N)` `[Yes/no]`
-- `password:` `Press any key`
-- `更多` `是否继续` `请输入`
-- `?`（以问号结尾的行）
-
-一旦识别到，插件会返回部分输出并 **等待用户的下一条输入**（不重新执行命令，而是作为当前命令的响应）。你可以继续发送 `/shell <输入>` 来回复。
-
-### 退出码显示
-
-每次非交互式命令执行完毕后，会显示命令的退出码：
+#### 4️⃣ 中断卡死的命令
+```bash
+# 执行一个无限循环
+/shell while true; do echo "loop"; sleep 1; done
+# 输出会不断刷新... 此时发送中断
+/shell stop
+> 🛑 已发送中断信号
+> loop
+> loop
+> ...
+> 退出码: 130   # 130 表示被 SIGINT 中断
 ```
-✅ 执行完成：
-...
-退出码: 0
+
+#### 5️⃣ 发送控制键
+```bash
+# 发送 Ctrl+C 中断（效果同 /shell stop）
+/ctrl c
+
+# 发送 Ctrl+D 退出当前 shell（会结束会话，下次自动重建）
+/ctrl d
+> ⌨️ 已发送 Ctrl+D
+> (无输出)
 ```
+
+#### 6️⃣ 重置会话
+```bash
+/shell reset
+> ♻️ 会话已重置
+# 之后所有环境变量、工作目录恢复初始状态
+```
+
+### 交互提示符自动识别
+
+插件内置正则匹配以下常见模式（不区分大小写）：
+- `[y/n]`、`(y/N)`、`[Yes/no]`
+- `password:`、`Press any key`、`Press ENTER`
+- `更多`、`是否继续`、`请输入`
+- `Enter your choice`、`Choice:`、`Select:`
+- 以 `?` 结尾的行（如 `rm: remove file 'test'?`）
+
+匹配到后会进入 **等待输入模式**，用户的下一条 `/shell` 内容会作为输入发送给当前进程。
 
 ---
 
@@ -145,7 +181,8 @@
 2. **会话管理**：每个用户第一次执行 `/shell` 时会创建一个真正的 `bash` 子进程（使用 `pexpect` 模拟终端）。
 3. **命令发送**：后续所有 `/shell` 命令都发送到该用户的同一会话中，因此 `cd`、`export`、`alias` 等会持续生效。
 4. **交互检测**：每次命令输出后，插件会扫描是否存在交互提示符，若存在则进入 **等待输入模式**，下一次用户消息会直接作为输入发送给正在运行的进程。
-5. **超时与安全**：命令执行受超时限制；危险命令模式匹配会在发送前拦截。
+5. **超时与中断**：命令执行超过配置时间后自动发送 `Ctrl+C` 中断；用户也可主动使用 `/shell stop` 或 `/ctrl c`。
+6. **控制键发送**：`/ctrl` 命令允许发送任意 `Ctrl+字母` 组合键，实现更精细的终端控制。
 
 ---
 
@@ -155,6 +192,7 @@
 - **并发限制**：不同用户的会话相互隔离，同一用户在同一时间只有一个活跃命令（交互等待期间无法执行新命令）。
 - **日志隐私**：开启 `记录日志` 后，所有命令及输出会写入 AstrBot 日志文件，请注意不要泄露敏感信息。
 - **平台适配**：用户ID格式取决于消息平台（QQ 号、微信ID、钉钉ID等），请确保 `授权用户` 中填写的是正确的平台标识。
+- **Windows 支持**：插件底层使用 `/bin/bash`，仅支持 Linux / macOS / WSL。Windows 原生环境请使用 WSL 或 Docker 部署 AstrBot。
 
 ---
 
@@ -168,47 +206,58 @@
 </details>
 
 <details>
-<summary><b>Q: 命令卡住不动了 / 没有输出？</b></summary>
+<summary><b>Q: 命令执行后没有任何输出？</b></summary>
 
-可能是命令需要交互但没有被识别，或者超时时间太短。可以：
-1. 检查 `超时时间` 配置是否过小；
-2. 使用 `/shell reset` 重置会话后重试；
-3. 如果命令确实需要长时间运行，考虑在命令末尾加上 `&` 或使用 `nohup`。
+可能原因：
+- 命令本身无输出（如 `cd`、`export`）
+- 超时时间过短导致命令被中断
+- 输出被截断（检查 `最大输出长度` 配置）
+
+尝试执行 `echo "test"` 验证基本功能。
 </details>
 
 <details>
-<summary><b>Q: 如何取消正在等待输入的命令？</b></summary>
+<summary><b>Q: 如何退出交互等待模式？</b></summary>
 
-发送 `/shell reset` 重置会话即可中断当前所有操作。
+- 发送 `/shell stop` 取消等待并中断命令
+- 发送 `/shell reset` 重置整个会话
 </details>
 
 <details>
 <summary><b>Q: 为什么我的 `cd` 命令没有生效？</b></summary>
 
-如果你使用了 `/shell cd /some/path`，检查一下是否提示权限错误或路径不存在。插件本身不会拦截 `cd`。如果仍然无效，请尝试重置会话后重新执行。
+检查路径是否存在及权限。插件本身不会拦截 `cd`。如果仍然无效，请尝试重置会话后重新执行。
 </details>
 
 <details>
-<summary><b>Q: 支持 Windows 系统吗？</b></summary>
+<summary><b>Q: 超时后命令还在后台运行吗？</b></summary>
 
-插件底层使用 `pexpect.spawn('/bin/bash')`，因此仅支持 Linux / macOS / WSL 环境。Windows 原生环境请使用 WSL 或 Docker 部署 AstrBot。
+超时后插件会发送 `Ctrl+C` 中断前台进程，但如果命令启动了后台子进程（如 `&` 或 `nohup`），这些子进程可能仍在运行。建议使用 `kill` 等命令手动清理。
+</details>
+
+<details>
+<summary><b>Q: 如何查看当前会话的 PID？</b></summary>
+
+在会话中执行 `echo $$` 即可获取 shell 进程的 PID。
 </details>
 
 ---
 
 ## 📝 更新日志
 
-### v2.0.0
-- ✅ 新增持久化交互式会话，支持 `cd`、`export` 等状态保持
-- ✅ 自动识别交互提示符，支持多轮输入
+### v2.1.0 (当前)
+- ✅ 新增 `/shell stop` 命令，可中断正在执行的命令
+- ✅ 新增 `/ctrl <字母>` 命令，支持发送任意 Ctrl 组合键
+- ✅ 命令超时后自动发送 `Ctrl+C` 而非直接终止
+- ✅ 插件卸载/重载时自动清理所有用户会话
+- ✅ 优化超时提示信息
 
+### v2.0.0
+- ✅ 持久化交互式会话，支持 `cd`、`export` 等状态保持
+- ✅ 自动识别交互提示符，支持多轮输入
 ---
 
 ## 🤝 贡献与反馈
 
 项目地址：[https://github.com/landamao/abpl_shdo](https://github.com/landamao/abpl_shdo)  
 欢迎提交 Issue 或 PR，让插件变得更好用！
-
----
-
-**Enjoy your shell in chat!** 🐚✨
