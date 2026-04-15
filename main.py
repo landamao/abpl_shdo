@@ -8,7 +8,6 @@ import pexpect
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.all import AstrBotConfig, logger, Context, Star, Reply, Plain
 
-
 class 交互式Shell会话:
     """持久化 Shell 会话，支持交互式命令和环境变量保持"""
 
@@ -55,46 +54,36 @@ class 交互式Shell会话:
 
     def send_interrupt(self) -> str:
         """
-        向 shell 进程发送 Ctrl+C (SIGINT) 中断当前命令，并等待提示符恢复。
-        返回中断后收集到的输出。
+        向 shell 进程发送 Ctrl+C (SIGINT) 中断当前命令。
+        采用非阻塞读取，立即返回，不再等待提示符。
         """
         self.info("[会话] 正在发送 Ctrl+C 中断信号")
         if not self.is_alive():
             self.warning("[会话] 进程已终止，无法发送中断信号")
             return ""
 
-        # 发送 Ctrl+C 字符
+        # 发送中断信号
         self.shell进程.sendcontrol('c')
-        time.sleep(0.2)  # 短暂等待让进程处理信号
+        time.sleep(0.1)  # 短暂让进程处理信号
 
-        # 等待提示符出现，收集中断后的输出
-        开始时间 = time.time()
         输出缓存 = ""
-        超时 = 5  # 等待提示符的最长时间
-
-        while time.time() - 开始时间 < 超时:
-            try:
-                data = self.shell进程.read_nonblocking(size=1024, timeout=0.5)
+        try:
+            # 循环读取当前所有立即可用的数据，直到无数据可读
+            while True:
+                data = self.shell进程.read_nonblocking(size=1024, timeout=0.1)
                 if data:
                     输出缓存 += data
-                    if self.提示符标记 in 输出缓存:
-                        break
-            except pexpect.TIMEOUT:
-                continue
-            except pexpect.EOF:
-                self.warning("[会话] 进程在中断后意外终止")
-                break
+                else:
+                    break
+        except pexpect.TIMEOUT:
+            pass
+        except pexpect.EOF:
+            self.warning("[会话] 进程在中断后意外终止")
 
-        # 清理输出，移除提示符
-        if self.提示符标记 in 输出缓存:
-            清理的输出 = 输出缓存.split(self.提示符标记, 1)[0]
-        else:
-            清理的输出 = 输出缓存
-
-        清理的输出 = self.过滤ANSI转义(清理的输出)
-        self.info(f"[会话] 中断后收到输出: {清理的输出[:200]}...")
+        # 清理 ANSI 转义码
+        清理的输出 = self.过滤ANSI转义(输出缓存)
+        self.info(f"[会话] 中断后立即读取到 {len(清理的输出)} 字节数据")
         return 清理的输出.strip()
-
     def _send_command_sync(self, command: str) -> Tuple[str, bool, bool, int | None]:
         """
         同步发送命令或用户输入，轮询读取输出直到：
