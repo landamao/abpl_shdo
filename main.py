@@ -25,7 +25,7 @@ class 交互式Shell会话:
     ]
     交互正则 = re.compile('|'.join(交互正则列表), re.IGNORECASE)
 
-    def __init__(self, 工作目录:str, 超时时间: int = 30, 记录日志:bool=False):
+    def __init__(self, 工作目录: str, 超时时间: int = 30, 记录日志: bool = False):
         self.超时时间 = 超时时间
         self.记录日志 = 记录日志
         self.info(f"[会话] 正在创建交互式 Shell 会话，工作目录: {工作目录}, 超时时间: {超时时间}秒")
@@ -53,13 +53,55 @@ class 交互式Shell会话:
             return '\n'.join(lines[1:])
         return output
 
+    def send_interrupt(self) -> str:
+        """
+        向 shell 进程发送 Ctrl+C (SIGINT) 中断当前命令，并等待提示符恢复。
+        返回中断后收集到的输出。
+        """
+        self.info("[会话] 正在发送 Ctrl+C 中断信号")
+        if not self.is_alive():
+            self.warning("[会话] 进程已终止，无法发送中断信号")
+            return ""
+
+        # 发送 Ctrl+C 字符
+        self.shell进程.sendcontrol('c')
+        time.sleep(0.2)  # 短暂等待让进程处理信号
+
+        # 等待提示符出现，收集中断后的输出
+        开始时间 = time.time()
+        输出缓存 = ""
+        超时 = 5  # 等待提示符的最长时间
+
+        while time.time() - 开始时间 < 超时:
+            try:
+                data = self.shell进程.read_nonblocking(size=1024, timeout=0.5)
+                if data:
+                    输出缓存 += data
+                    if self.提示符标记 in 输出缓存:
+                        break
+            except pexpect.TIMEOUT:
+                continue
+            except pexpect.EOF:
+                self.warning("[会话] 进程在中断后意外终止")
+                break
+
+        # 清理输出，移除提示符
+        if self.提示符标记 in 输出缓存:
+            清理的输出 = 输出缓存.split(self.提示符标记, 1)[0]
+        else:
+            清理的输出 = 输出缓存
+
+        清理的输出 = self.过滤ANSI转义(清理的输出)
+        self.info(f"[会话] 中断后收到输出: {清理的输出[:200]}...")
+        return 清理的输出.strip()
+
     def _send_command_sync(self, command: str) -> Tuple[str, bool, bool, int | None]:
         """
         同步发送命令或用户输入，轮询读取输出直到：
         - 出现自定义 shell 提示符 → 命令正常结束，并获取退出码
         - 出现交互提示符 → 需要用户输入
         - 连续多次无新输出且无提示符 → 也认为需要输入（兜底）
-        - 总超时 → 强制结束
+        - 总超时 → 强制结束并发送中断信号
         返回 (输出内容, 是否仍需等待输入, 是否出错/超时, 退出码)
         """
         # 记录完整命令（不截断）
@@ -105,7 +147,7 @@ class 交互式Shell会话:
                 # 提取命令输出部分（不含提示符）
                 清理的输出 = 输出缓存.split(self.提示符标记, 1)[0]
                 清理的输出 = self.去命令回显(清理的输出, command)
-                清理的输出 = self.过滤ANSI转义(清理的输出)  # 新增过滤
+                清理的输出 = self.过滤ANSI转义(清理的输出)
                 # 记录完整输出到日志（不截断）
                 self.info(f"[命令执行] 完整原始输出（含提示符）:\n{输出缓存}")
                 self.info(f"[命令执行] 清理后输出长度: {len(清理的输出)} 字符")
@@ -145,7 +187,7 @@ class 交互式Shell会话:
                 self.info(f"[命令执行] 检测到交互提示符，匹配内容: {最后的输出}")
                 self.info(f"[命令执行] 完整输出缓存（含交互提示符）:\n{输出缓存}")
                 清理的输出 = self.去命令回显(输出缓存, command)
-                清理的输出 = self.过滤ANSI转义(清理的输出)  # 新增过滤
+                清理的输出 = self.过滤ANSI转义(清理的输出)
                 self.等待输入 = True
                 self.info("[命令执行] 进入等待用户输入模式")
                 return 清理的输出.strip(), True, False, None
@@ -153,7 +195,7 @@ class 交互式Shell会话:
             # 兜底：连续多次无新输出且无结束标志
             if 无新输出计数 >= 3:
                 清理的输出 = self.去命令回显(输出缓存, command)
-                清理的输出 = self.过滤ANSI转义(清理的输出)  # 新增过滤
+                清理的输出 = self.过滤ANSI转义(清理的输出)
                 if not 清理的输出.strip():
                     self.info("[命令执行] 输出为空，继续等待")
                     continue
@@ -166,6 +208,13 @@ class 交互式Shell会话:
         # 超时返回
         self.error(f"[命令执行] 命令执行超时 (>{self.超时时间}秒)，当前输出缓存长度: {len(输出缓存)}")
         self.info(f"[命令执行] 超时时的输出缓存内容:\n{输出缓存}")
+
+        # 超时时发送 Ctrl+C 中断当前命令
+        中断输出 = self.send_interrupt()
+        输出缓存 += "\n[命令执行超时，已自动发送 Ctrl+C 中断]"
+        if 中断输出:
+            输出缓存 += "\n" + 中断输出
+
         return self.去命令回显(输出缓存, command), False, True, None
 
     def is_alive(self) -> bool:
@@ -209,16 +258,19 @@ class 交互式Shell会话:
         ansi_escape = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
         return ansi_escape.sub('', text)
 
-    #使用统一的日志输出
+    # 使用统一的日志输出
     def info(self, v):
         if self.记录日志:
             logger.info(v)
+
     @staticmethod
     def warning(v):
         logger.warning(v)
+
     @staticmethod
     def error(v):
         logger.error(v)
+
     @staticmethod
     def debug(v):
         logger.debug(v)
@@ -340,7 +392,6 @@ class shell执行器(Star):
 
         # 权限检查
         if 用户ID not in self.授权用户:
-            # 仍记录简单日志
             logger.warning(f"[权限] 用户 {用户ID} 无权使用 shell 执行器，拒绝执行")
             await self.发送回复文本(event, "❌ 你没有权限")
             return
@@ -362,6 +413,27 @@ class shell执行器(Star):
             else:
                 self.debug(f"[用户 {用户ID}] 没有活动会话，无需重置")
             await self.发送回复文本(event, "♻️ 会话已重置")
+            return
+
+        # 特殊命令：中断当前命令 (stop)
+        if 用户输入内容 == "stop":
+            self.info(f"[用户 {用户ID}] 请求中断当前命令")
+            会话 = self.会话管理.get(用户ID)
+            if not 会话:
+                await self.发送回复文本(event, "ℹ️ 当前没有活动的 shell 会话")
+                return
+            if not 会话.waiting_for_input:
+                # 如果没有等待输入，说明可能正在执行命令
+                中断输出 = 会话.send_interrupt()
+                if 中断输出:
+                    回复文本 = f"🛑 已发送中断信号\n```\n{中断输出}\n```"
+                else:
+                    回复文本 = "🛑 已发送中断信号（无额外输出）"
+                await self.发送回复文本(event, 回复文本)
+            else:
+                # 如果正在等待输入，直接取消等待状态并重置
+                会话.等待输入 = False
+                await self.发送回复文本(event, "🛑 已取消等待输入状态")
             return
 
         # 检查是否有一个正在等待输入的会话
@@ -399,16 +471,19 @@ class shell执行器(Star):
         self.info(f"[配置] 获取默认值: {键} = {val}")
         return val
 
-    #使用统一的日志输出
+    # 使用统一的日志输出
     def info(self, v):
         if self.记录日志:
             logger.info(v)
+
     @staticmethod
     def warning(v):
         logger.warning(v)
+
     @staticmethod
     def error(v):
         logger.error(v)
+
     @staticmethod
     def debug(v):
         logger.debug(v)
@@ -416,4 +491,7 @@ class shell执行器(Star):
     async def terminate(self):
         """当插件被禁用、重载插件时会调用这个方法"""
         for i in self.会话管理:
-            self.会话管理[i].close()
+            try:
+                self.会话管理[i].close()
+            except Exception as e:
+                logger.warning(e, exc_info=True)
