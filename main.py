@@ -413,5 +413,7 @@ class shell执行器(Star):
     def debug(v):
         logger.debug(v)
 
-
-
+    async def terminate(self):
+        """当插件被禁用、重载插件时会调用这个方法"""
+        for i in self.会话管理:
+            self.会话管理[i].close()
