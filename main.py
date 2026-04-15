@@ -152,13 +152,13 @@ class 交互式Shell会话:
 
             # 兜底：连续多次无新输出且无结束标志
             if 无新输出计数 >= 3:
-                self.warning(f"[命令执行] 连续 {无新输出计数} 次无新输出且无提示符，假定需要用户输入")
-                self.info(f"[命令执行] 最后输出片段: {最后的输出}")
                 清理的输出 = self.去命令回显(输出缓存, command)
                 清理的输出 = self.过滤ANSI转义(清理的输出)  # 新增过滤
                 if not 清理的输出.strip():
                     self.info("[命令执行] 输出为空，继续等待")
                     continue
+                self.warning(f"[命令执行] 连续 {无新输出计数} 次无新输出且无提示符，假定需要用户输入")
+                self.info(f"[命令执行] 最后输出片段: {最后的输出}")
                 self.等待输入 = True
                 self.info("[命令执行] 进入等待用户输入模式（兜底分支）")
                 return 清理的输出.strip(), True, False, None
