@@ -2,8 +2,8 @@
 <div align="center">
 
 # 🚀 Shell 执行器
-[![版本](https://img.shields.io/badge/version-v2.1.0-blue)](#)
-[![作者](https://img.shields.io/badge/author-懒大猫-orange)](#)
+[![版本](https://img.shields.io/badge/版本-v2.1.0-blue)](#)
+[![作者](https://img.shields.io/badge/作者-懒大猫-orange)](#)
 [![框架平台](https://img.shields.io/badge/框架平台-AstrBot-blue)](#)
 
 > 支持持久会话，在聊天中安全、持久化地执行 Shell 命令 —— 像操作本地终端一样自然
