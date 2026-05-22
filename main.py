@@ -1,10 +1,7 @@
-import asyncio
-import os
-import re
-import time
-from typing import Tuple, Any
-
 import pexpect
+import asyncio, os, re, time
+from typing import Tuple, Any
+from astrbot.api.star import StarTools
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.all import AstrBotConfig, logger, Context, Star, Reply, Plain
 
@@ -104,7 +101,7 @@ class 交互式Shell会话:
             self.等待输入 = False
 
         输出缓存 = ""
-        最后输出长度 = 0
+
         无新输出计数 = 0
         开始时间 = time.time()
         轮询次数 = 0
@@ -115,7 +112,6 @@ class 交互式Shell会话:
                 data = self.shell进程.read_nonblocking(size=1024, timeout=0.2)
                 if data:
                     输出缓存 += data
-                    最后输出长度 = len(输出缓存)
                     无新输出计数 = 0
                     self.info(f"[轮询 {轮询次数}] 读取到 {len(data)} 字节，当前缓存总长度 {len(输出缓存)}")
                     # 可选：记录读取的原始数据片段（避免日志过大，可注释）
@@ -182,7 +178,32 @@ class 交互式Shell会话:
                 return 清理的输出.strip(), True, False, None
 
             # 兜底：连续多次无新输出且无结束标志
-            if 无新输出计数 >= 3:
+            if 无新输出计数 >= 20:
+                # 先回头检查提示符是否已在缓存中（可能之前轮询漏掉了）
+                if self.提示符标记 in 输出缓存:
+                    self.info(f"[命令执行] 兜底分支中发现提示符标记，按正常结束处理")
+                    清理的输出 = 输出缓存.split(self.提示符标记, 1)[0]
+                    清理的输出 = self.去命令回显(清理的输出, command)
+                    清理的输出 = self.过滤ANSI转义(清理的输出)
+
+                    # 获取退出码
+                    退出码 = None
+                    try:
+                        self.shell进程.sendline('echo $?')
+                        self.shell进程.expect(self.提示符标记, timeout=2)
+                        raw = self.shell进程.before
+                        ansi_escape = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
+                        cleaned = ansi_escape.sub('', raw)
+                        for line in cleaned.splitlines():
+                            line = line.strip()
+                            if line.isdigit():
+                                退出码 = int(line)
+                                break
+                    except Exception:
+                        pass
+
+                    return 清理的输出.strip(), False, False, 退出码
+
                 清理的输出 = self.去命令回显(输出缓存, command)
                 清理的输出 = self.过滤ANSI转义(清理的输出)
                 if not 清理的输出.strip():
@@ -284,8 +305,8 @@ class shell执行器(Star):
         self.危险命令: list[str] = config.危险命令
         self.info(f"[配置] 危险命令模式: {self.危险命令}")
 
-        插件目录 = os.path.dirname(os.path.abspath(__file__))
-        默认工作目录 = os.path.join(插件目录, "工作目录")
+        数据目录 = StarTools.get_data_dir()
+        默认工作目录 = os.path.join(str(数据目录), "工作目录")
         config.工作目录 = config.工作目录.strip()
         if not config.工作目录:
             config.工作目录 = 默认工作目录
@@ -519,6 +540,57 @@ class shell执行器(Star):
         else:
             回复文本 = f"⌨️ 已发送 Ctrl+{字母.upper()}"
 
+        await self.发送回复文本(event, 回复文本)
+
+    @filter.command(command_name="sha")
+    async def 单次执行(self, event: AstrMessageEvent):
+        """单次执行命令，不保留会话"""
+        用户ID = event.get_sender_id()
+        self.info(f"[单次执行] 收到用户 {用户ID} 的单次命令请求")
+
+        # 权限检查
+        if 用户ID not in self.授权用户:
+            await self.发送回复文本(event, "❌ 你没有权限")
+            return
+
+        消息文本 = event.message_str.strip()
+        分割 = 消息文本.split(" ", 1)
+        用户输入内容 = 分割[1].strip() if len(分割) > 1 else ""
+
+        if not 用户输入内容:
+            await self.发送回复文本(event, "请提供要执行的命令。使用方法: /sha <命令>")
+            return
+
+        # 危险命令拦截
+        if self.包含危险命令(用户输入内容):
+            await self.发送回复文本(event, "❌ 命令包含危险词，已被拦截。")
+            return
+
+        # 直接执行命令，不创建会话
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                用户输入内容,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                cwd=self.工作目录
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self.超时时间)
+            输出 = stdout.decode('utf-8', errors='replace').strip()
+        except asyncio.TimeoutError:
+            proc.kill()
+            输出 = f"⏱️ 命令执行超时（>{self.超时时间}秒）"
+        except Exception as e:
+            输出 = f"❌ 执行出错: {e}"
+
+        if not 输出:
+            输出 = "（无输出）"
+
+        if len(输出) > self.最大输出长度:
+            输出 = 输出[:self.最大输出长度] + "\n... (输出过长已截断)"
+
+        回复文本 = f"✅ 执行完成：\n```\n{输出}\n```"
+        if proc.returncode is not None:
+            回复文本 += f"\n退出码: {proc.returncode}"
         await self.发送回复文本(event, 回复文本)
 
     def 获取默认值(self, 键, 默认=None) -> Any:
