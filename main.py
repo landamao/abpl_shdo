@@ -44,6 +44,8 @@ class 交互式Shell会话:
     @staticmethod
     def 去命令回显(output: str, command: str) -> str:
         """去掉命令自身的回显行"""
+        if not command.strip():
+            return output
         lines = output.splitlines()
         if lines and lines[0].strip() == command.strip():
             return '\n'.join(lines[1:])
@@ -81,24 +83,29 @@ class 交互式Shell会话:
         清理的输出 = self.过滤ANSI转义(输出缓存)
         self.info(f"[会话] 中断后立即读取到 {len(清理的输出)} 字节数据")
         return 清理的输出.strip()
-    def _send_command_sync(self, command: str) -> Tuple[str, bool, bool, int | None]:
+    def _send_command_sync(self, command: str, 仅接收输出: bool = False) -> Tuple[str, bool, bool, int | None]:
         """
         同步发送命令或用户输入，轮询读取输出直到：
         - 出现自定义 shell 提示符 → 命令正常结束，并获取退出码
         - 出现交互提示符 → 需要用户输入
         - 连续多次无新输出且无提示符 → 也认为需要输入（兜底）
         - 总超时 → 强制结束并发送中断信号
+        仅接收输出=True 时不发送任何内容，只继续读取输出（用于 -continue/-继续），
+        直到上述任一条件再次触发为止
         返回 (输出内容, 是否仍需等待输入, 是否出错/超时, 退出码)
         """
-        # 记录完整命令（不截断）
-        self.info(f"[命令执行] 开始处理命令/输入，原始内容: {command}")
-        if not self.等待输入:
-            self.info(f"[命令执行] 作为新命令发送: {command}")
-            self.shell进程.sendline(command)
-        else:
-            self.info(f"[命令执行] 作为交互响应发送: {command}")
-            self.shell进程.sendline(command)
+        if 仅接收输出:
+            self.info("[命令执行] 仅接收输出模式：不发送任何内容，继续读取输出")
             self.等待输入 = False
+        else:
+            # 记录完整命令（不截断）
+            self.info(f"[命令执行] 开始处理命令/输入，原始内容: {command}")
+            if not self.等待输入:
+                self.info(f"[命令执行] 作为新命令发送: {command}")
+            else:
+                self.info(f"[命令执行] 作为交互响应发送: {command}")
+                self.等待输入 = False
+            self.shell进程.sendline(command)
 
         输出缓存 = ""
 
@@ -263,6 +270,20 @@ class 交互式Shell会话:
         self.info(f"[会话] 命令执行结果: 等待输入={等待中}, 错误={错误}, 退出码={退出码}, 输出长度={len(输出)}")
         return 输出, 等待中, 退出码
 
+    async def 继续接收输出(self) -> Tuple[str, bool, int | None]:
+        """继续接收输出（-continue/-继续），不发送任何内容，
+        直到提示符出现 / 检测到交互提示 / 再次无新输出 / 总超时中的下一个触发"""
+        self.info("[会话] 继续接收输出")
+        loop = asyncio.get_running_loop()
+        输出, 等待中, 错误, 退出码 = await loop.run_in_executor(
+            None, self._send_command_sync, "", True
+        )
+        if 错误:
+            输出 += "\n[命令执行超时或会话意外结束]"
+            self.error("[会话] 继续接收输出返回错误状态")
+        self.info(f"[会话] 继续接收输出结果: 等待输入={等待中}, 错误={错误}, 退出码={退出码}, 输出长度={len(输出)}")
+        return 输出, 等待中, 退出码
+
     @staticmethod
     def 过滤ANSI转义(text: str) -> str:
         ansi_escape = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
@@ -325,6 +346,17 @@ class shell执行器(Star):
         for i, j in self.__dict__.items():
             logger.info(f"  {i}: {j}")
 
+    def 获取黑名单插件(self):
+        """获取黑名单插件实例"""
+        try:
+            all_stars = self.context.get_all_stars()
+            for star_meta in all_stars:
+                if hasattr(star_meta, 'star_cls') and star_meta.name == "黑名单系统":
+                    return star_meta.star_cls
+        except Exception as e:
+            logger.warning(f"获取黑名单插件失败: {e}")
+        return None
+
     def 包含危险命令(self, 命令: str) -> bool:
         """检查命令是否包含危险模式"""
         self.debug(f"[安全检查] 检查命令是否包含危险模式: {命令}")
@@ -356,7 +388,10 @@ class shell执行器(Star):
 
         self.debug(f"[用户 {用户ID}] 准备发送命令到会话")
         输出, 等待中, 退出码 = await 会话.发送命令(用户输入)
+        await self.回复执行结果(event, 用户ID, 会话, 输出, 等待中, 退出码)
 
+    async def 回复执行结果(self, event: AstrMessageEvent, 用户ID: str, 会话: 交互式Shell会话, 输出: str, 等待中: bool, 退出码: int | None) -> None:
+        """格式化并回复执行结果（完成 / 需要继续输入），供命令执行与 -continue/-继续 共用"""
         # 将完整输出记录到日志（不截断）
         logger.info(f"[用户 {用户ID}] 命令执行完成，原始输出：\n{输出}")
         if 等待中:
@@ -380,7 +415,7 @@ class shell执行器(Star):
 
         if 等待中:
             self.info(f"[用户 {用户ID}] 命令触发交互模式，等待用户进一步输入")
-            回复文本 = f"🔄 需要继续输入：\n```\n{输出}\n```\n请发送下一步输入"
+            回复文本 = f"🔄 需要继续输入：\n```\n{输出}\n```\n请发送下一步输入；若程序仍在运行无需输入，可发送 -继续 或 -continue 继续接收输出"
             self.debug(f"[用户 {用户ID}] 回复内容（交互等待）: {回复文本}")
             await self.发送回复文本(event, 回复文本)
         else:
@@ -395,7 +430,7 @@ class shell执行器(Star):
 
     @filter.command(command_name="shell", alias={"sh"})
     async def 执行shell命令(self, event: AstrMessageEvent):
-        """执行 shell 命令或响应交互式输入"""
+        """执行 shell 命令或响应交互式输入，仅授权用户可用，未授权用户使用将被自动拉黑"""
         用户ID = event.get_sender_id()
         self.info("[Shell执行器]=================================================[开始]")
         self.info(f"[请求] 收到来自用户 {用户ID} 的 shell 命令请求，完整消息原文: {event.message_str}")
@@ -403,8 +438,14 @@ class shell执行器(Star):
         # 权限检查
         if 用户ID not in self.授权用户:
             logger.warning(f"[权限] 用户 {用户ID} 无权使用 shell 执行器，拒绝执行")
-            await self.发送回复文本(event, "❌ 你没有权限")
-            return
+            黑名单插件 = self.获取黑名单插件()
+            try:
+                结果 = await 黑名单插件.加入黑名单(黑名单用户=event.get_sender_id(), 名字=event.get_sender_name(),时长=5, 理由="未经授权使用shell指令", 群ID=event.get_group_id())
+                logger.info(f"拉黑结果：{结果}")
+            except Exception as e:
+                logger.error("加入黑名单失败", e)
+            raise PermissionError("该用户未授权使用shell相关指令，已自动拉黑五分钟")
+
         self.info(f"[权限] 用户 {用户ID} 通过权限检查")
 
         消息文本 = event.message_str.strip()
@@ -413,7 +454,7 @@ class shell执行器(Star):
         self.info(f"[请求] 提取的用户输入内容: {用户输入内容}")
 
         # 特殊命令：重置会话
-        if 用户输入内容 == "reset":
+        if 用户输入内容 in ("-reset", "-重置"):
             self.info(f"[用户 {用户ID}] 请求重置会话")
             if 用户ID in self.会话管理:
                 self.debug(f"[用户 {用户ID}] 找到现有会话，准备关闭")
@@ -425,8 +466,8 @@ class shell执行器(Star):
             await self.发送回复文本(event, "♻️ 会话已重置")
             return
 
-        # 特殊命令：中断当前命令 (stop)
-        if 用户输入内容 == "stop":
+        # 特殊命令：中断当前命令 (-stop/-停止)
+        if 用户输入内容 in ("-stop", "-停止"):
             logger.info(f"[用户 {用户ID}] 请求中断当前命令")
             会话 = self.会话管理.get(用户ID)
             if not 会话:
@@ -446,6 +487,20 @@ class shell执行器(Star):
                 await self.发送回复文本(event, "🛑 已取消等待输入状态")
             return
 
+        # 特殊命令：继续接收输出 (-continue/-继续)
+        if 用户输入内容 in ("-continue", "-继续"):
+            self.info(f"[用户 {用户ID}] 请求继续接收会话输出")
+            会话 = self.会话管理.get(用户ID)
+            if not 会话 or not 会话.is_alive():
+                if 用户ID in self.会话管理:
+                    del self.会话管理[用户ID]
+                await self.发送回复文本(event, "ℹ️ 当前没有活动的 shell 会话")
+                return
+            self.debug(f"[用户 {用户ID}] 开始继续接收输出")
+            输出, 等待中, 退出码 = await 会话.继续接收输出()
+            await self.回复执行结果(event, 用户ID, 会话, 输出, 等待中, 退出码)
+            return
+
         # 检查是否有一个正在等待输入的会话
         会话 = self.会话管理.get(用户ID)
         if 会话 and 会话.waiting_for_input:
@@ -456,7 +511,7 @@ class shell执行器(Star):
         # 如果没有等待输入的会话，则当作新命令处理
         if not 用户输入内容:
             self.info(f"[用户 {用户ID}] 未提供命令内容")
-            await self.发送回复文本(event, "请提供要执行的命令。使用方法: /shell <命令>")
+            await self.发送回复文本(event, "请提供要执行的命令。使用方法: /shell <命令>\n特殊指令: -reset/-重置 重置会话 | -stop/-停止 中断命令 | -continue/-继续 继续接收输出")
             return
 
         # 危险命令拦截
@@ -477,14 +532,21 @@ class shell执行器(Star):
 
     @filter.command(command_name="ctrl", alias={"sh^", "^sh", "sh+", "+sh", "c"})
     async def 发送控制键(self, event: AstrMessageEvent):
-        """向当前 shell 会话发送 Ctrl 组合键"""
+        """向当前 shell 会话发送 Ctrl 组合键，未授权用户使用将被自动拉黑"""
         用户ID = event.get_sender_id()
         self.info(f"[Ctrl] 用户 {用户ID} 请求发送控制键，原始消息: {event.message_str}")
 
         # 权限检查
         if 用户ID not in self.授权用户:
-            await self.发送回复文本(event, "❌ 你没有权限")
-            return
+            logger.warning(f"[权限] 用户 {用户ID} 无权使用 shell 执行器，拒绝执行")
+            黑名单插件 = self.获取黑名单插件()
+            try:
+                结果 = await 黑名单插件.加入黑名单(黑名单用户=event.get_sender_id(), 名字=event.get_sender_name(),时长=5, 理由="未经授权使用shell指令", 群ID=event.get_group_id())
+                logger.info(f"拉黑结果：{结果}")
+            except Exception as e:
+                logger.error("加入黑名单失败", e)
+            raise PermissionError("该用户未授权使用shell相关指令，已自动拉黑五分钟")
+
 
         # 解析参数
         消息文本 = event.message_str.strip()
@@ -544,14 +606,20 @@ class shell执行器(Star):
 
     @filter.command(command_name="sha")
     async def 单次执行(self, event: AstrMessageEvent):
-        """单次执行命令，不保留会话"""
+        """单次执行命令，不保留会话，仅授权用户可用，未授权用户使用将被自动拉黑"""
         用户ID = event.get_sender_id()
         self.info(f"[单次执行] 收到用户 {用户ID} 的单次命令请求")
 
         # 权限检查
         if 用户ID not in self.授权用户:
-            await self.发送回复文本(event, "❌ 你没有权限")
-            return
+            logger.warning(f"[权限] 用户 {用户ID} 无权使用 shell 执行器，拒绝执行")
+            黑名单插件 = self.获取黑名单插件()
+            try:
+                结果 = await 黑名单插件.加入黑名单(黑名单用户=event.get_sender_id(), 名字=event.get_sender_name(),时长=5, 理由="未经授权使用shell指令", 群ID=event.get_group_id())
+                logger.info(f"拉黑结果：{结果}")
+            except Exception as e:
+                logger.error("加入黑名单失败", e)
+            raise PermissionError("该用户未授权使用shell相关指令，已自动拉黑五分钟")
 
         消息文本 = event.message_str.strip()
         分割 = 消息文本.split(" ", 1)
