@@ -1,5 +1,5 @@
 import pexpect
-import asyncio, os, re, time
+import asyncio, os, re, signal, time
 from typing import Tuple, Any
 from astrbot.api.star import StarTools
 from astrbot.api.event import filter, AstrMessageEvent
@@ -22,8 +22,11 @@ class 交互式Shell会话:
     交互正则 = re.compile('|'.join(交互正则列表), re.IGNORECASE)
 
     def __init__(self, 工作目录: str, 超时时间: int = 30, 记录日志: bool = False):
+        self.工作目录 = 工作目录
         self.超时时间 = 超时时间
         self.记录日志 = 记录日志
+        self.创建时间 = time.time()
+        self.最后活动时间 = time.time()
         self.info(f"[会话] 正在创建交互式 Shell 会话，工作目录: {工作目录}, 超时时间: {超时时间}秒")
         # 启动 bash，分配伪终端
         self.shell进程 = pexpect.spawn('/bin/bash', encoding='utf-8', echo=False)
@@ -63,6 +66,7 @@ class 交互式Shell会话:
 
         # 发送中断信号
         self.shell进程.sendcontrol('c')
+        self.最后活动时间 = time.time()
         time.sleep(0.1)  # 短暂让进程处理信号
 
         输出缓存 = ""
@@ -89,7 +93,7 @@ class 交互式Shell会话:
         - 出现自定义 shell 提示符 → 命令正常结束，并获取退出码
         - 出现交互提示符 → 需要用户输入
         - 连续多次无新输出且无提示符 → 也认为需要输入（兜底）
-        - 总超时 → 强制结束并发送中断信号
+        - 总超时 → 不自动中断，进入等待输入模式（可 -continue 继续接收 / 手动中断）
         仅接收输出=True 时不发送任何内容，只继续读取输出（用于 -continue/-继续），
         直到上述任一条件再次触发为止
         返回 (输出内容, 是否仍需等待输入, 是否出错/超时, 退出码)
@@ -106,6 +110,7 @@ class 交互式Shell会话:
                 self.info(f"[命令执行] 作为交互响应发送: {command}")
                 self.等待输入 = False
             self.shell进程.sendline(command)
+            self.最后活动时间 = time.time()
 
         输出缓存 = ""
 
@@ -120,6 +125,7 @@ class 交互式Shell会话:
                 if data:
                     输出缓存 += data
                     无新输出计数 = 0
+                    self.最后活动时间 = time.time()
                     self.info(f"[轮询 {轮询次数}] 读取到 {len(data)} 字节，当前缓存总长度 {len(输出缓存)}")
                     # 可选：记录读取的原始数据片段（避免日志过大，可注释）
                     # self.info(f"[轮询 {轮询次数}] 数据片段: {data[:200]}")
@@ -222,17 +228,19 @@ class 交互式Shell会话:
                 self.info("[命令执行] 进入等待用户输入模式（兜底分支）")
                 return 清理的输出.strip(), True, False, None
 
-        # 超时返回
+        # 超时：不自动中断（会话支持手动 -stop/-停止、/ctrl c 中断），与"需要继续输入"同样处理，
+        # 进入等待输入模式，由用户决定下一步：发送交互输入 / -continue 继续接收 / 手动中断
         self.error(f"[命令执行] 命令执行超时 (>{self.超时时间}秒)，当前输出缓存长度: {len(输出缓存)}")
         self.info(f"[命令执行] 超时时的输出缓存内容:\n{输出缓存}")
 
-        # 超时时发送 Ctrl+C 中断当前命令
-        中断输出 = self.send_interrupt()
-        输出缓存 += "\n[命令执行超时，已自动发送 Ctrl+C 中断]"
-        if 中断输出:
-            输出缓存 += "\n" + 中断输出
-
-        return self.去命令回显(输出缓存, command), False, True, None
+        清理的输出 = self.过滤ANSI转义(self.去命令回显(输出缓存, command)).rstrip()
+        清理的输出 += (
+            f"\n[⏱️ 已执行超过 {self.超时时间} 秒仍未结束，未自动中断]"
+            f"\n可发送 -continue/-继续 继续接收输出，-stop/-停止 或 /ctrl c 中断，或直接发送交互输入"
+        )
+        self.等待输入 = True
+        self.info("[命令执行] 超时进入等待输入模式，等待用户决定下一步")
+        return 清理的输出, True, False, None
 
     def is_alive(self) -> bool:
         """检查 shell 进程是否存活"""
@@ -250,6 +258,35 @@ class 交互式Shell会话:
             self.debug("[会话] Shell 进程已强制终止")
         else:
             self.debug("[会话] Shell 会话已经关闭，无需重复关闭")
+
+    def 获取会话信息(self) -> str:
+        """返回会话信息（PID、状态、等待输入、时间、目录等）"""
+        运行秒数 = int(time.time() - self.创建时间)
+        if 运行秒数 >= 3600:
+            时长描述 = f"{运行秒数 // 3600} 小时 {(运行秒数 % 3600) // 60} 分 {运行秒数 % 60} 秒"
+        elif 运行秒数 >= 60:
+            时长描述 = f"{运行秒数 // 60} 分 {运行秒数 % 60} 秒"
+        else:
+            时长描述 = f"{运行秒数} 秒"
+
+        if self.is_alive():
+            状态描述 = "存活"
+        else:
+            状态描述 = "已终止"
+            if self.shell进程.exitstatus is not None:
+                状态描述 += f"（退出码 {self.shell进程.exitstatus}）"
+            elif self.shell进程.signalstatus is not None:
+                状态描述 += f"（被信号 {self.shell进程.signalstatus} 终止）"
+
+        return (
+            f"PID: {self.shell进程.pid}\n"
+            f"状态: {状态描述}\n"
+            f"等待输入: {'是' if self.等待输入 else '否'}\n"
+            f"创建时间: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.创建时间))}（已运行 {时长描述}）\n"
+            f"最后活动: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.最后活动时间))}\n"
+            f"起始工作目录: {self.工作目录}\n"
+            f"超时时间: {self.超时时间} 秒"
+        )
 
     @property
     def waiting_for_input(self) -> bool:
@@ -501,6 +538,19 @@ class shell执行器(Star):
             await self.回复执行结果(event, 用户ID, 会话, 输出, 等待中, 退出码)
             return
 
+        # 特殊命令：查看会话信息 (-info/-信息)
+        if 用户输入内容 in ("-info", "-信息"):
+            self.info(f"[用户 {用户ID}] 请求查看会话信息")
+            会话 = self.会话管理.get(用户ID)
+            if not 会话:
+                await self.发送回复文本(event, "ℹ️ 当前没有活动的 shell 会话，发送任意命令将自动创建")
+                return
+            信息文本 = 会话.获取会话信息()
+            if not 会话.is_alive():
+                信息文本 += "\n（会话已终止，下次执行命令时将自动重建）"
+            await self.发送回复文本(event, f"📋 会话信息：\n```\n{信息文本}\n```\n当前活跃会话总数: {len(self.会话管理)}")
+            return
+
         # 检查是否有一个正在等待输入的会话
         会话 = self.会话管理.get(用户ID)
         if 会话 and 会话.waiting_for_input:
@@ -511,7 +561,7 @@ class shell执行器(Star):
         # 如果没有等待输入的会话，则当作新命令处理
         if not 用户输入内容:
             self.info(f"[用户 {用户ID}] 未提供命令内容")
-            await self.发送回复文本(event, "请提供要执行的命令。使用方法: /shell <命令>\n特殊指令: -reset/-重置 重置会话 | -stop/-停止 中断命令 | -continue/-继续 继续接收输出")
+            await self.发送回复文本(event, "请提供要执行的命令。使用方法: /shell <命令>\n特殊指令: -reset/-重置 重置会话 | -stop/-停止 中断命令 | -continue/-继续 继续接收输出 | -info/-信息 查看会话信息")
             return
 
         # 危险命令拦截
@@ -604,6 +654,37 @@ class shell执行器(Star):
 
         await self.发送回复文本(event, 回复文本)
 
+    async def 终止进程树(self, proc: asyncio.subprocess.Process) -> None:
+        """终止进程及其全部子进程，避免超时后留下孤儿进程和卡死在管道上的孙进程"""
+        if os.name == "posix":
+            try:
+                # start_new_session=True 使命令自成进程组，整组 SIGKILL 连孙进程一起带走
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+        else:
+            # Windows 无进程组语义，用 taskkill /T 连同子进程树一起强制结束
+            try:
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill", "/F", "/T", "/PID", str(proc.pid),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL
+                )
+                await asyncio.wait_for(killer.wait(), timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+        # 收尸，确保 returncode 就位
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except asyncio.TimeoutError:
+            pass
+
     @filter.command(command_name="sha")
     async def 单次执行(self, event: AstrMessageEvent):
         """单次执行命令，不保留会话，仅授权用户可用，未授权用户使用将被自动拉黑"""
@@ -640,13 +721,15 @@ class shell执行器(Star):
                 用户输入内容,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                cwd=self.工作目录
+                cwd=self.工作目录,
+                start_new_session=(os.name == "posix")
             )
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self.超时时间)
             输出 = stdout.decode('utf-8', errors='replace').strip()
         except asyncio.TimeoutError:
-            proc.kill()
-            输出 = f"⏱️ 命令执行超时（>{self.超时时间}秒）"
+            self.warning(f"[单次执行] 命令超时 (>{self.超时时间}秒)，正在终止进程及其子进程")
+            await self.终止进程树(proc)
+            输出 = f"⏱️ 命令执行超时（>{self.超时时间}秒），已强制结束"
         except Exception as e:
             输出 = f"❌ 执行出错: {e}"
 
